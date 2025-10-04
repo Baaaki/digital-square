@@ -1,32 +1,122 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+############################
+# OS - LINUX
+############################
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+############################
+# BACKEND - GO
+############################
+
+# Binaries
 *.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Test binary, built with `go test -c`
-*.test
-
-# Code coverage profiles and other test artifacts
 *.out
-coverage.*
-*.coverprofile
-profile.cov
+/bin/
+/dist/
+/build/
+main
+backend/cmd/server/server
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
+# Dependencies
+vendor/
 go.work
 go.work.sum
 
-# env file
-.env
+# Air live reload
+tmp/
+build-errors.log
 
-# Editor/IDE
-# .idea/
-# .vscode/
+############################
+# FRONTEND - NEXT.JS + BUN
+############################
+
+# Build
+.next/
+out/
+build/
+
+# Dependencies
+node_modules/
+
+# Bun specific
+bun.lockb
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+############################
+# DATABASE
+############################
+
+# PostgreSQL data
+postgres-data/
+pgdata/
+*.dump
+*.backup
+
+# Redis data
+*.rdb
+*.aof
+dump.rdb
+redis-data/
+
+# WAL (Write-Ahead Log)
+data/
+*.wal
+
+############################
+# ENVIRONMENT & SECRETS
+############################
+
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Certificates
+*.key
+*.pem
+*.crt
+*.cer
+
+############################
+# IDE
+############################
+
+# VSCode
+.vscode/
+.history/
+
+# JetBrains (GoLand/WebStorm)
+.idea/
+*.iml
+
+############################
+# LOGS & TEMP
+############################
+
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+
+############################
+# DOCKER
+############################
+
+docker/volumes/
+docker-compose.override.yml
+
+############################
+# PROJECT SPECIFIC
+############################
+
+# Claude Code internal files
+.claude/
+CLAUDE.md
+docs/
