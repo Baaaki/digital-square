@@ -4,20 +4,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 type Message struct {
-	ID        uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	UserID    uuid.UUID `gorm:"type:uuid;not null;index"`
-	Content   string    `gorm:"type:text;not null"`
-	CreatedAt time.Time `gorm:"index"`
+    ID                uint64         `gorm:"primaryKey;autoIncrement"`
+    MessageID         string         `gorm:"type:varchar(50);uniqueIndex;not null"`
+    UserID            uuid.UUID      `gorm:"type:uuid;not null;index"`
+	Content           string         `gorm:"type:text;not null"`
+    CreatedAt         time.Time      `gorm:"index:idx_created_time"` 
+    
+	DeletedAt         gorm.DeletedAt `gorm:"index"`
+    DeletedBy         *uuid.UUID     `gorm:"type:uuid;index"`
+    IsDeletedByAdmin  bool           `gorm:"default:false"`
 
-	//Soft Delete Fields
-	IsDeleted        bool `gorm:"default:false;index"`
-	IsDeletedByAdmin bool `gorm:"default:false"`
-	DeletedAt        *time.Time
-	DeletedBy        *uuid.UUID `gorm:"type:uuid"`
-
-	//Foreign Key Relationship
-	User User `gorm:"foreignKey:UserID;constraint:OnDelete:CASCADE"`
+	User              User           `gorm:"foreignKey:UserID;references:ID"`
 }
+
