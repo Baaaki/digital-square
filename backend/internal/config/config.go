@@ -15,6 +15,7 @@ type Config struct {
 	ServerPort  string
 	Environment string
 	JWTExpiry   time.Duration
+	WALPath     string
 }
 
 func Load() *Config {
@@ -30,6 +31,11 @@ func Load() *Config {
 		log.Fatal("Invalid JWT_EXPIRY format")
 	}
 
+	walPath := os.Getenv("WAL_PATH")
+	if walPath == "" {
+		walPath = "data/wal_messages"
+	}
+
 	cfg := &Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		RedisURL:    os.Getenv("REDIS_URL"),
@@ -37,6 +43,7 @@ func Load() *Config {
 		ServerPort:  os.Getenv("SERVER_PORT"),
 		Environment: os.Getenv("ENVIRONMENT"),
 		JWTExpiry:   expiry,
+		WALPath:     walPath,
 	}
 
 	return cfg
