@@ -57,13 +57,13 @@ func (r *MessageRepository) GetRecentMessages(limit int) ([]models.Message, erro
 }
 
 // SoftDeleteMessage soft deletes a message (user delete)
-func (r *MessageRepository) SoftDeleteMessage(messageID uint64, deletedBy uuid.UUID) error {
+func (r *MessageRepository) SoftDeleteMessage(messageID uint64, deletedBy uuid.UUID, isDeletedByAdmin bool) error {
     return r.db.Model(&models.Message{}).
         Where("id = ?", messageID).
         Updates(map[string]interface{}{
             "deleted_at":          gorm.DeletedAt{Valid: true},
             "deleted_by":          deletedBy,
-            "is_deleted_by_admin": false,
+            "is_deleted_by_admin": isDeletedByAdmin,
         }).Error
 }
 
@@ -73,4 +73,13 @@ func (r *MessageRepository) BatchInsert(messages []models.Message) error {
         return nil
     }
     return r.db.CreateInBatches(messages, 500).Error
+}
+
+func (r*MessageRepository) GetByMessageID (messageID string) (*models.Message, error) {
+    var message models.Message
+    err:= r.db.Where("message_id = ?", messageID).First(&message).Error
+    if err != nil {
+        return nil, err
+    }
+    return &message, nil
 }
