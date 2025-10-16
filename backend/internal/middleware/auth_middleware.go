@@ -10,28 +10,35 @@ import (
 
 func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
     return func(c *gin.Context) {
-        // 1. Get Authorization header
+        var tokenString string
+
+        // 1. Try Authorization header first (for REST API)
         authHeader := c.GetHeader("Authorization")
-        if authHeader == "" {
+        if authHeader != "" {
+            tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+            if tokenString == authHeader {
+                // "Bearer " prefix missing
+                c.JSON(http.StatusUnauthorized, gin.H{
+                    "error": "Invalid authorization format. Use: Bearer <token>",
+                })
+                c.Abort()
+                return
+            }
+        } else {
+            // 2. Fallback to cookie (for WebSocket)
+            tokenString, _ = c.Cookie("auth_token")
+        }
+
+        // 3. Check if token exists
+        if tokenString == "" {
             c.JSON(http.StatusUnauthorized, gin.H{
-                "error": "Authorization header required",
+                "error": "Authentication required",
             })
             c.Abort()
             return
         }
-        
-        // 2. Extract token from "Bearer <token>"
-        tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-        if tokenString == authHeader {
-            // "Bearer " prefix yoksa
-            c.JSON(http.StatusUnauthorized, gin.H{
-                "error": "Invalid authorization format. Use: Bearer <token>",
-            })
-            c.Abort()
-            return
-        }
-        
-        // 3. Validate token
+
+        // 4. Validate token
         claims, err := utils.ValidateToken(tokenString, jwtSecret)
         if err != nil {
             c.JSON(http.StatusUnauthorized, gin.H{

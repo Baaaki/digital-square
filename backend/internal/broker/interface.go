@@ -1,11 +1,12 @@
 package broker
 
 type Message struct {
-	MessageID string `json:"message_id"`
-	UserID    string `json:"user_id"`
-	Username  string `json:"username"`
-	Content   string `json:"content"`
-	Timestamp string `json:"timestamp"`
+	MessageID      string `json:"message_id"`
+	UserID         string `json:"user_id"`
+	Username       string `json:"username"`
+	Content        string `json:"content"`
+	Timestamp      string `json:"timestamp"`
+	DeletedByAdmin bool   `json:"deleted_by_admin"`
 }
 
 type MessageBroker interface {

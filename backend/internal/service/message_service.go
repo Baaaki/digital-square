@@ -13,7 +13,7 @@ import (
 
 var(
 	ErrMessageNotFound = errors.New("message not found")
-	ErrUnauthorized = errors.New("unauthorized to delete this message") 
+	ErrUnauthorized = errors.New("unauthorized to delete this message")
 )
 
 type MessageService struct {
