@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -43,6 +44,10 @@ func main() {
 	// Initialize services
 	authService := service.NewAuthService(userRepo, cfg.JWTSecret, 24*time.Hour)
 	messageService := service.NewMessageService(messageRepo, redisBroker, walInstance)
+
+	// Start batch writer (WAL → PostgreSQL every 1 minute)
+	ctx := context.Background()
+	messageService.StartBatchWriter(ctx)
 
 	// Initialize handlers
 	authHandler := handler.NewAuthHandler(authService)

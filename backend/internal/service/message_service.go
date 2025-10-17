@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/Baaaki/digital-square/internal/broker"
@@ -66,9 +68,8 @@ func (s *MessageService) SendMessage(userID uuid.UUID, username, content string)
 		return nil, err
 	}
 
-	if err := s.messageRepo.CreateMessage(msg) ; err != nil {
-		return nil, err
-	}
+	// PostgreSQL write is now handled by batch writer (async)
+	// Messages are persisted to PostgreSQL every 1 minute from WAL
 
 	return msg, nil
 }
@@ -98,4 +99,75 @@ func (s *MessageService) DeleteMessage (messageID string, userID uuid.UUID, isAd
 	}
 
 	return nil
+}
+
+// StartBatchWriter starts a background goroutine that writes messages from WAL to PostgreSQL
+// Runs every 1 minute and writes ALL messages in WAL (no limit)
+func (s *MessageService) StartBatchWriter(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+
+		log.Println("🚀 Batch Writer started: Writing WAL → PostgreSQL every 1 minute")
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Println("⏹️  Batch Writer stopped")
+				return
+
+			case <-ticker.C:
+				s.processBatch()
+			}
+		}
+	}()
+}
+
+// processBatch reads ALL messages from WAL and writes to PostgreSQL
+func (s *MessageService) processBatch() {
+	// 1. Get ALL entries from WAL
+	entries, err := s.wal.GetAllEntries()
+	if err != nil {
+		log.Printf("❌ Batch Writer: Failed to read WAL: %v", err)
+		return
+	}
+
+	// 2. If WAL is empty, skip (no unnecessary PostgreSQL calls)
+	if len(entries) == 0 {
+		// WAL is empty, nothing to do
+		return
+	}
+
+	log.Printf("📦 Batch Writer: Found %d messages in WAL", len(entries))
+
+	// 3. Convert WAL entries to models.Message
+	messages := make([]models.Message, 0, len(entries))
+	messageIDs := make([]string, 0, len(entries))
+
+	for _, entry := range entries {
+		userID, _ := uuid.Parse(entry.UserID)
+		messages = append(messages, models.Message{
+			MessageID: entry.MessageID,
+			UserID:    userID,
+			Content:   entry.Content,
+			CreatedAt: entry.Timestamp,
+		})
+		messageIDs = append(messageIDs, entry.MessageID)
+	}
+
+	// 4. Batch insert to PostgreSQL
+	if err := s.messageRepo.BatchInsert(messages); err != nil {
+		log.Printf("❌ Batch Writer: Failed to insert messages: %v", err)
+		return
+	}
+
+	log.Printf("✅ Batch Writer: %d messages written to PostgreSQL", len(messages))
+
+	// 5. Cleanup WAL (only after successful PostgreSQL write)
+	if err := s.wal.Cleanup(messageIDs); err != nil {
+		log.Printf("❌ Batch Writer: Failed to cleanup WAL: %v", err)
+		return
+	}
+
+	log.Printf("🧹 Batch Writer: WAL cleaned up successfully")
 }

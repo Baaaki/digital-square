@@ -67,8 +67,22 @@ func (w *WAL) Write(entry WALEntry) error {
 func (w *WAL) ReadAll() ([]WALEntry, error) {
     w.mu.Lock()
     defer w.mu.Unlock()
-    
+
     return w.readAllUnsafe()  // ← Ortak kodu çağır
+}
+
+// GetAllEntries returns all entries from WAL (for batch writer)
+// Returns empty slice if WAL is empty (no unnecessary processing)
+func (w *WAL) GetAllEntries() ([]WALEntry, error) {
+    w.mu.Lock()
+    defer w.mu.Unlock()
+
+    entries, err := w.readAllUnsafe()
+    if err != nil {
+        return nil, err
+    }
+
+    return entries, nil
 }
 
 // Cleanup removes entries that have been persisted to PostgreSQL
