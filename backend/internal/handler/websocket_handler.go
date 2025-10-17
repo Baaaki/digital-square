@@ -32,6 +32,7 @@ const (
 
 type WSRequest struct {
 	Type      WSMessageType `json:"type"`
+	TempID    string        `json:"temp_id,omitempty"`
 	Content   string        `json:"content,omitempty"`    // For send_message
 	MessageID string        `json:"message_id,omitempty"` // For delete_message
 }
@@ -47,6 +48,10 @@ type WSResponse struct {
 
 	// For delete events
 	DeletedByAdmin bool `json:"deleted_by_admin,omitempty"`
+
+	//For ACK
+	TempID string `json:"temp_id,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 type WebSocketHandler struct {
@@ -184,18 +189,18 @@ func (h *WebSocketHandler) handleClient(client *Client) {
 
 func (h *WebSocketHandler) handleSendMessage(client *Client, req WSRequest) {
 	if req.Content == "" {
-		h.sendError(client, "content cannot be empty")
+		h.sendAck(client, req.TempID, "", "error", "content cannot be empty")
 		return
 	}
 
 	msg, err := h.messageService.SendMessage(client.userID, client.username, req.Content)
 	if err != nil {
-		log.Printf("Failed to send message: %v", err)
-		h.sendError(client, "failed to send message")
+		log.Printf("Failed to send message (WAL Error): %v", err)
+		h.sendAck(client, req.TempID, "", "error", "failed to write to WAL")
 		return
 	}
 
-	h.sendAck(client, msg.MessageID)
+	h.sendAck(client, req.TempID, msg.MessageID, "success", "")
 }
 
 func (h *WebSocketHandler) handleDeleteMessage(client *Client, req WSRequest) {
@@ -368,12 +373,21 @@ func (h *WebSocketHandler) sendError(client *Client, errorMsg string) {
 	}
 }
 
-func (h *WebSocketHandler) sendAck(client *Client, messageID string) {
+func (h *WebSocketHandler) sendAck(client *Client, tempID, messageID, status, errorMsg string) {
 	client.conn.SetWriteDeadline(time.Now().Add(writeWait))
-	if err := client.conn.WriteJSON(WSResponse{
+
+	ackResponse := WSResponse{
 		Type:      "ack",
-		MessageID: messageID,
-	}); err != nil {
+		TempID:    tempID,
+		MessageID: messageID, // If success is full, if error is empty
+		Status:    status,
+	}
+
+	if status == "error" {
+		ackResponse.Error = errorMsg
+	}
+
+	if err := client.conn.WriteJSON(ackResponse); err != nil {
 		log.Printf("Failed to send ACK: %v", err)
 	}
 }
