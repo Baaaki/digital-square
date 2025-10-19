@@ -20,6 +20,11 @@
 main
 backend/cmd/server/server
 
+# Test & Coverage
+*.test
+*.prof
+coverage.out
+
 # Dependencies
 vendor/
 go.work
