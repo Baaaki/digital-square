@@ -13,15 +13,15 @@ import (
 	"github.com/google/uuid"
 )
 
-var(
+var (
 	ErrMessageNotFound = errors.New("message not found")
-	ErrUnauthorized = errors.New("unauthorized to delete this message")
+	ErrUnauthorized    = errors.New("unauthorized to delete this message")
 )
 
 type MessageService struct {
 	messageRepo *repository.MessageRepository //for database
-	broker broker.MessageBroker // for pub/sub
-	wal *wal.WAL // for wal, you know :D
+	broker      broker.MessageBroker          // for pub/sub
+	wal         *wal.WAL                      // for wal, you know :D
 }
 
 func NewMessageService(
@@ -42,47 +42,69 @@ func (s *MessageService) SendMessage(userID uuid.UUID, username, content string)
 
 	msg := &models.Message{
 		MessageID: messageID,
-		UserID: userID,
-		Content: content,
+		UserID:    userID,
+		Content:   content,
 		CreatedAt: now,
 	}
 
+	// 1. ✅ Write to WAL FIRST (sync - durability, crash recovery)
 	walEntry := wal.WALEntry{
-		MessageID: messageID,
-		UserID: userID.String(),
-		Content: content,
-		Timestamp: now,
+		MessageID: msg.MessageID,
+		UserID:    msg.UserID.String(),
+		Content:   msg.Content,
+		Timestamp: msg.CreatedAt,
 	}
-	if err:= s.wal.Write(walEntry); err != nil {
+	if err := s.wal.Write(walEntry); err != nil {
+		log.Printf("❌ Failed to write to WAL: %v", err)
 		return nil, err
 	}
 
-	brokerMsg := broker.Message{
-		MessageID: messageID,
-		UserID: userID.String(),
-		Username: username,
-		Content: content,
-		Timestamp: now.Format(time.RFC3339),
-	}
-	if err := s.broker.Publish(brokerMsg) ; err != nil {
-		return nil, err
-	}
+	// 2. ✅ Write to Redis cache asynchronously (for new connections)
+	go func() {
+		if err := s.broker.CacheMessage(*msg); err != nil {
+			log.Printf("❌ Failed to cache message to Redis: %v", err)
+		}
+	}()
 
-	// PostgreSQL write is now handled by batch writer (async)
-	// Messages are persisted to PostgreSQL every 1 minute from WAL
+	// 3. ✅ WebSocket handler will broadcast to all connected clients (in-memory)
+	//    PostgreSQL write will be handled by Batch Writer (every 1 minute)
 
 	return msg, nil
 }
 
 func (s *MessageService) GetRecentMessages(limit int) ([]models.Message, error) {
-	return s.messageRepo.GetRecentMessages(limit)
+	// Try Redis cache first (updated in real-time)
+	cachedMsgs, err := s.broker.GetRecentMessages(limit)
+	if err == nil && len(cachedMsgs) > 0 {
+		log.Printf("Cache HIT: Got %d messages from Redis", len(cachedMsgs))
+		return cachedMsgs, nil
+	}
+
+	// Cache miss - fallback to PostgreSQL
+	log.Printf("Cache MISS: Fetching from PostgreSQL")
+	messages, err := s.messageRepo.GetRecentMessages(limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Warm up Redis cache for next connection
+	if len(messages) > 0 {
+		go func() {
+			for _, msg := range messages {
+				s.broker.CacheMessage(msg)
+			}
+			log.Printf("Warmed up Redis cache with %d messages", len(messages))
+		}()
+	}
+
+	return messages, nil
 }
 
-func (s *MessageService) GetMessagesBefore (beforeID uint64, limit int, isAdmin bool) ([]models.Message, error) {
+func (s *MessageService) GetMessagesBefore(beforeID uint64, limit int, isAdmin bool) ([]models.Message, error) {
 	return s.messageRepo.GetMessagesBefore(beforeID, limit)
 }
 
-func (s *MessageService) DeleteMessage (messageID string, userID uuid.UUID, isAdmin bool) error {
+func (s *MessageService) DeleteMessage(messageID string, userID uuid.UUID, isAdmin bool) error {
 	msg, err := s.messageRepo.GetByMessageID(messageID)
 	if err != nil {
 		return ErrMessageNotFound
@@ -117,6 +139,7 @@ func (s *MessageService) StartBatchWriter(ctx context.Context) {
 				return
 
 			case <-ticker.C:
+				log.Println("⏰ Batch Writer tick - checking WAL...")
 				s.processBatch()
 			}
 		}
