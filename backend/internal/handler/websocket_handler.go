@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Baaaki/digital-square/internal/broker"
 	"github.com/Baaaki/digital-square/internal/models"
 	"github.com/Baaaki/digital-square/internal/service"
 	"github.com/Baaaki/digital-square/internal/utils"
@@ -39,7 +38,8 @@ type WSRequest struct {
 
 type WSResponse struct {
 	Type      string `json:"type"` // "message", "ack", "error", "message_deleted", "session_expired"
-	MessageID string `json:"message_id,omitempty"`
+	ID        uint64 `json:"id,omitempty"`        // PostgreSQL auto-increment ID (for pagination)
+	MessageID string `json:"message_id,omitempty"` // UUID (global unique identifier)
 	UserID    string `json:"user_id,omitempty"`
 	Username  string `json:"username,omitempty"`
 	Content   string `json:"content,omitempty"`
@@ -56,7 +56,6 @@ type WSResponse struct {
 
 type WebSocketHandler struct {
 	messageService *service.MessageService
-	broker         broker.MessageBroker
 	jwtSecret      string
 	clients        map[*websocket.Conn]*Client
 	mu             sync.RWMutex
@@ -78,19 +77,13 @@ var upgrader = websocket.Upgrader{
 
 func NewWebSocketHandler(
 	messageService *service.MessageService,
-	broker broker.MessageBroker,
 	jwtSecret string,
 ) *WebSocketHandler {
-	handler := &WebSocketHandler{
+	return &WebSocketHandler{
 		messageService: messageService,
-		broker:         broker,
 		jwtSecret:      jwtSecret,
 		clients:        make(map[*websocket.Conn]*Client),
 	}
-
-	go handler.broadcastMessages()
-
-	return handler
 }
 
 func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
@@ -127,6 +120,9 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 	h.mu.Unlock()
 
 	log.Printf("Client connected: %s (total: %d)", client.username, len(h.clients))
+	
+	// ✅ SEND INITIAL 100 MESSAGES FROM REDIS/POSTGRESQL
+	go h.sendInitialMessages(client)
 
 	defer h.removeClient(conn)
 
@@ -188,6 +184,8 @@ func (h *WebSocketHandler) handleClient(client *Client) {
 }
 
 func (h *WebSocketHandler) handleSendMessage(client *Client, req WSRequest) {
+	log.Printf("🔵 Message received from %s (content: %.30s...)", client.username, req.Content)
+
 	if req.Content == "" {
 		h.sendAck(client, req.TempID, "", "error", "content cannot be empty")
 		return
@@ -195,10 +193,29 @@ func (h *WebSocketHandler) handleSendMessage(client *Client, req WSRequest) {
 
 	msg, err := h.messageService.SendMessage(client.userID, client.username, req.Content)
 	if err != nil {
-		log.Printf("Failed to send message (WAL Error): %v", err)
+		log.Printf("❌ Failed to send message (WAL Error): %v", err)
 		h.sendAck(client, req.TempID, "", "error", "failed to write to WAL")
 		return
 	}
+
+	log.Printf("✅ Message %s written to WAL", msg.MessageID)
+
+	// Direct broadcast to all connected clients (in-memory, same node)
+	h.mu.RLock()
+	clientCount := len(h.clients)
+	h.mu.RUnlock()
+
+	h.broadcastToAll(WSResponse{
+		Type:      "message",
+		ID:        msg.ID,        // PostgreSQL ID (for pagination)
+		MessageID: msg.MessageID, // UUID (global unique identifier)
+		UserID:    client.userID.String(),
+		Username:  client.username,
+		Content:   msg.Content,
+		Timestamp: msg.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	})
+
+	log.Printf("📤 Broadcasted message to %d clients", clientCount)
 
 	h.sendAck(client, req.TempID, msg.MessageID, "success", "")
 }
@@ -218,18 +235,8 @@ func (h *WebSocketHandler) handleDeleteMessage(client *Client, req WSRequest) {
 		return
 	}
 
-	// Publish delete event to Redis (so all clients get notified)
-	deleteEvent := broker.Message{
-		MessageID:      req.MessageID,
-		UserID:         client.userID.String(),
-		Username:       client.username,
-		Content:        "MESSAGE_DELETED",
-		Timestamp:      "",
-		DeletedByAdmin: isAdmin,
-	}
-	if err := h.broker.Publish(deleteEvent); err != nil {
-		log.Printf("Failed to publish delete event: %v", err)
-	}
+	// Direct broadcast delete event to all connected clients (in-memory)
+	h.broadcastDeleteEvent(req.MessageID, isAdmin)
 
 	// Send success response to deleter
 	client.conn.SetWriteDeadline(time.Now().Add(writeWait))
@@ -238,38 +245,6 @@ func (h *WebSocketHandler) handleDeleteMessage(client *Client, req WSRequest) {
 		MessageID: req.MessageID,
 	}); err != nil {
 		log.Printf("Failed to send delete success response: %v", err)
-	}
-}
-
-func (h *WebSocketHandler) broadcastMessages() {
-	// Subscribe to Redis channel
-	msgChan, err := h.broker.Subscribe()
-	if err != nil {
-		log.Fatalf("Failed to subscribe to Redis: %v", err)
-	}
-
-	log.Println("Broadcast listener started")
-
-	// Listen for messages from Redis
-	for brokerMsg := range msgChan {
-		// Check if this is a delete event
-		if brokerMsg.Content == "MESSAGE_DELETED" {
-			// Broadcast delete event
-			h.broadcastDeleteEvent(brokerMsg.MessageID, brokerMsg.DeletedByAdmin)
-			continue
-		}
-
-		// Normal message - broadcast to all clients
-		wsMsg := WSResponse{
-			Type:      "message",
-			MessageID: brokerMsg.MessageID,
-			UserID:    brokerMsg.UserID,
-			Username:  brokerMsg.Username,
-			Content:   brokerMsg.Content,
-			Timestamp: brokerMsg.Timestamp,
-		}
-
-		h.broadcastToAll(wsMsg)
 	}
 }
 
@@ -390,4 +365,52 @@ func (h *WebSocketHandler) sendAck(client *Client, tempID, messageID, status, er
 	if err := client.conn.WriteJSON(ackResponse); err != nil {
 		log.Printf("Failed to send ACK: %v", err)
 	}
+}
+
+// sendInitialMessages sends last 100 messages from Redis/PostgreSQL to newly connected client
+func (h *WebSocketHandler) sendInitialMessages(client *Client) {
+	// Get last 100 messages from database (Redis cache or PostgreSQL)
+	messages, err := h.messageService.GetRecentMessages(100)
+	if err != nil {
+		log.Printf("Failed to load initial messages for %s: %v", client.username, err)
+		return
+	}
+
+	isAdmin := client.role == models.RoleAdmin
+
+	// Send each message to client
+	for _, msg := range messages {
+		// Skip deleted messages for non-admin users
+		if msg.DeletedAt.Valid && !isAdmin {
+			continue
+		}
+
+		content := msg.Content
+		// Mask deleted message content for non-admin users
+		if msg.DeletedAt.Valid && !isAdmin {
+			if msg.IsDeletedByAdmin {
+				content = "This message was deleted by admin"
+			} else {
+				content = "This message was deleted"
+			}
+		}
+
+		wsMsg := WSResponse{
+			Type:      "message",
+			ID:        msg.ID,        // PostgreSQL ID (for pagination)
+			MessageID: msg.MessageID, // UUID (global unique identifier)
+			UserID:    msg.UserID.String(),
+			Username:  msg.User.Username,
+			Content:   content,
+			Timestamp: msg.CreatedAt.Format(time.RFC3339),
+		}
+
+		client.conn.SetWriteDeadline(time.Now().Add(writeWait))
+		if err := client.conn.WriteJSON(wsMsg); err != nil {
+			log.Printf("Failed to send initial message to %s: %v", client.username, err)
+			return
+		}
+	}
+
+	log.Printf("Sent %d initial messages to %s", len(messages), client.username)
 }
