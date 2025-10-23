@@ -1,20 +1,18 @@
 package broker
 
-type Message struct {
-	MessageID      string `json:"message_id"`
-	UserID         string `json:"user_id"`
-	Username       string `json:"username"`
-	Content        string `json:"content"`
-	Timestamp      string `json:"timestamp"`
-	DeletedByAdmin bool   `json:"deleted_by_admin"`
-}
+import "github.com/Baaaki/digital-square/internal/models"
 
+// MessageBroker provides caching for recent messages
+// Phase 1-2: Cache only (single node architecture)
+// Phase 3: Pub/Sub will be added for multi-node communication
 type MessageBroker interface {
-	// Publish sends a message to the global chat channel
-	Publish(msg Message) error
-
-	// Subscribe returns a receive-only channel for incoming messages
-	Subscribe() (<-chan Message, error)
+	// Cache operations (Phase 1-2)
+	CacheMessage(msg models.Message) error
+	GetRecentMessages(limit int) ([]models.Message, error)
 
 	Close() error
+
+	// Phase 3: Uncomment for multi-node deployment
+	// Publish(msg Message) error
+	// Subscribe() (<-chan Message, error)
 }
