@@ -12,21 +12,22 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
     return func(c *gin.Context) {
         var tokenString string
 
-        // 1. Try Authorization header first (for REST API)
-        authHeader := c.GetHeader("Authorization")
-        if authHeader != "" {
-            tokenString = strings.TrimPrefix(authHeader, "Bearer ")
-            if tokenString == authHeader {
-                // "Bearer " prefix missing
-                c.JSON(http.StatusUnauthorized, gin.H{
-                    "error": "Invalid authorization format. Use: Bearer <token>",
-                })
-                c.Abort()
-                return
+        // 1. Try cookie first (primary method)
+        tokenString, err := c.Cookie("token")
+        if err != nil || tokenString == "" {
+            // 2. Fallback to Authorization header (for tools like Postman)
+            authHeader := c.GetHeader("Authorization")
+            if authHeader != "" {
+                tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+                if tokenString == authHeader {
+                    // "Bearer " prefix missing
+                    c.JSON(http.StatusUnauthorized, gin.H{
+                        "error": "Invalid authorization format. Use: Bearer <token>",
+                    })
+                    c.Abort()
+                    return
+                }
             }
-        } else {
-            // 2. Fallback to cookie (for WebSocket)
-            tokenString, _ = c.Cookie("auth_token")
         }
 
         // 3. Check if token exists

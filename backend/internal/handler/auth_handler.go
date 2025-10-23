@@ -54,10 +54,20 @@ func (h *AuthHandler) Register(c *gin.Context) {
         return
     }
     
-    // 3. Return success response
+    // 3. Set token in HTTP-only cookie
+    c.SetCookie(
+        "token",           // name
+        token,             // value
+        7*24*60*60,       // maxAge (7 days in seconds)
+        "/",              // path
+        "",               // domain (empty = current domain)
+        false,            // secure (set to true in production with HTTPS)
+        true,             // httpOnly (JavaScript cannot access)
+    )
+
+    // 4. Return success response (without token in body)
     c.JSON(http.StatusCreated, gin.H{
         "message": "User registered successfully",
-        "token":   token,
         "user": gin.H{
             "id":       user.ID,
             "username": user.Username,
@@ -96,10 +106,20 @@ func (h *AuthHandler) Login(c *gin.Context) {
         return
     }
     
-    // 3. Return success response
+    // 3. Set token in HTTP-only cookie
+    c.SetCookie(
+        "token",           // name
+        token,             // value
+        7*24*60*60,       // maxAge (7 days in seconds)
+        "/",              // path
+        "",               // domain (empty = current domain)
+        false,            // secure (set to true in production with HTTPS)
+        true,             // httpOnly (JavaScript cannot access)
+    )
+
+    // 4. Return success response (without token in body)
     c.JSON(http.StatusOK, gin.H{
         "message": "Login successful",
-        "token":   token,
         "user": gin.H{
             "id":       user.ID,
             "username": user.Username,
