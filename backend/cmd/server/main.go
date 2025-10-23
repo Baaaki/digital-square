@@ -13,6 +13,7 @@ import (
 	"github.com/Baaaki/digital-square/internal/repository"
 	"github.com/Baaaki/digital-square/internal/service"
 	"github.com/Baaaki/digital-square/internal/wal"
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -30,7 +31,7 @@ func main() {
 	}
 	defer walInstance.Close()
 
-	// Initialize Redis Broker
+	// Initialize Redis Broker (cache only for Phase 1-2)
 	redisBroker, err := broker.NewRedisMessageBroker(cfg.RedisURL)
 	if err != nil {
 		log.Fatalf("Failed to initialize Redis broker: %v", err)
@@ -51,10 +52,21 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handler.NewAuthHandler(authService)
-	wsHandler := handler.NewWebSocketHandler(messageService, redisBroker, cfg.JWTSecret)
+	messageHandler := handler.NewMessageHandler(messageService)
+	wsHandler := handler.NewWebSocketHandler(messageService, cfg.JWTSecret)
 
 	// Setup Gin router
 	router := gin.Default()
+
+	// CORS configuration (allow cookies from frontend)
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:3000", "http://localhost:3001"}, // Frontend URL (3000 or 3001)
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Cookie"},
+		ExposeHeaders:    []string{"Set-Cookie"},
+		AllowCredentials: true, // ✅ Cookie'lerin gönderilmesine izin ver
+		MaxAge:           12 * time.Hour,
+	}))
 
 	// Public routes
 	router.POST("/api/auth/register", authHandler.Register)
@@ -66,11 +78,14 @@ func main() {
 	{
 		// WebSocket connection
 		protected.GET("/ws", wsHandler.HandleWebSocket)
+		
+		// Message endpoints
+		protected.GET("/messages/before/:id", messageHandler.GetBefore)
 	}
 
 	// Start server
 	log.Printf("Server starting on %s", cfg.ServerPort)
-	log.Println("Broadcast listener started")
+	log.Println("Direct broadcast mode (single node)")
 	if err := router.Run(cfg.ServerPort); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
