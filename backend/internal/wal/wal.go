@@ -32,7 +32,8 @@ func NewWAL(filePath string) (*WAL, error) {
         return nil, err
     }
 
-    file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+    // Open file with READ+WRITE+APPEND mode (for concurrent read/write)
+    file, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
     if err != nil {
         return nil, err
     }
@@ -110,13 +111,17 @@ func (w *WAL) Cleanup(persistedIDs []string) error {
         }
     }
 
+    // Close the current file before replacing it
+    if err := w.file.Close(); err != nil {
+        return err
+    }
+
     // Rewrite WAL file with only remaining entries
     tempFile := w.filePath + ".tmp"
     f, err := os.Create(tempFile)
     if err != nil {
         return err
     }
-    defer f.Close()
 
     for _, entry := range remainingEntries {
         data, _ := json.Marshal(entry)
@@ -124,9 +129,23 @@ func (w *WAL) Cleanup(persistedIDs []string) error {
     }
 
     f.Sync()
+    f.Close()
 
     // Replace old file with new one (atomic)
-    return os.Rename(tempFile, w.filePath)
+    if err := os.Rename(tempFile, w.filePath); err != nil {
+        return err
+    }
+
+    // Reopen the file with same flags (CRITICAL!)
+    newFile, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+    if err != nil {
+        return err
+    }
+
+    // Update the file pointer to the new file
+    w.file = newFile
+
+    return nil
 }
 
 // readAllUnsafe reads all entries without locking (internal use only)
