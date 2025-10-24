@@ -1,6 +1,8 @@
 package repository
 
 import (
+    "time"
+
     "github.com/Baaaki/digital-square/internal/models"
     "github.com/google/uuid"
     "gorm.io/gorm"
@@ -58,10 +60,11 @@ func (r *MessageRepository) GetRecentMessages(limit int) ([]models.Message, erro
 
 // SoftDeleteMessage soft deletes a message (user delete)
 func (r *MessageRepository) SoftDeleteMessage(messageID uint64, deletedBy uuid.UUID, isDeletedByAdmin bool) error {
+    now := time.Now()
     return r.db.Model(&models.Message{}).
         Where("id = ?", messageID).
         Updates(map[string]interface{}{
-            "deleted_at":          gorm.DeletedAt{Valid: true},
+            "deleted_at":          gorm.DeletedAt{Time: now, Valid: true}, // ✅ Set actual timestamp
             "deleted_by":          deletedBy,
             "is_deleted_by_admin": isDeletedByAdmin,
         }).Error
