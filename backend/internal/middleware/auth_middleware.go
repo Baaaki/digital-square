@@ -50,9 +50,9 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
         }
         
         // 4. Add claims to context (handlers can access)
-        c.Set("user_id", claims.UserID)
+        c.Set("user_id", claims.UserID.String())
         c.Set("user_email", claims.Email)
-        c.Set("user_role", claims.Role)
+        c.Set("user_role", string(claims.Role)) // Convert Role type to string
         c.Set("claims", claims)
         
         // 5. Continue to handler
