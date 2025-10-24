@@ -4,9 +4,14 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Baaaki/digital-square/pkg/logger"
 )
 
 func TestWAL_WriteAfterCleanup(t *testing.T) {
+	// Initialize logger for WAL operations
+	logger.Init(false)
+
 	// Setup: Create temp WAL file
 	tmpDir := t.TempDir()
 	walPath := filepath.Join(tmpDir, "test.wal")

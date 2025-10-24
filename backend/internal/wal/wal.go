@@ -7,6 +7,9 @@ import (
     "path/filepath"
     "sync"
     "time"
+
+    "github.com/Baaaki/digital-square/pkg/logger"
+    "go.uber.org/zap"
 )
 
 // WALEntry represents a message in the WAL
@@ -46,22 +49,49 @@ func NewWAL(filePath string) (*WAL, error) {
 
 // Write appends a message to WAL
 func (w *WAL) Write(entry WALEntry) error {
+    start := time.Now()
     w.mu.Lock()
     defer w.mu.Unlock()
 
     data, err := json.Marshal(entry)
     if err != nil {
+        logger.Log.Error("WAL: Failed to marshal entry",
+            zap.String("message_id", entry.MessageID),
+            zap.Error(err),
+        )
         return err
     }
 
     // Write to file
+    writeStart := time.Now()
     _, err = w.file.WriteString(string(data) + "\n")
     if err != nil {
+        logger.Log.Error("WAL: Failed to write to file",
+            zap.String("message_id", entry.MessageID),
+            zap.Error(err),
+        )
         return err
     }
 
     // Force sync to disk (durability)
-    return w.file.Sync()
+    syncStart := time.Now()
+    if err := w.file.Sync(); err != nil {
+        logger.Log.Error("WAL: Failed to sync to disk",
+            zap.String("message_id", entry.MessageID),
+            zap.Error(err),
+        )
+        return err
+    }
+    syncDuration := time.Since(syncStart)
+
+    logger.Log.Debug("WAL: Entry written and synced",
+        zap.String("message_id", entry.MessageID),
+        zap.Duration("write_duration", time.Since(writeStart)),
+        zap.Duration("sync_duration", syncDuration),
+        zap.Duration("total_duration", time.Since(start)),
+    )
+
+    return nil
 }
 
 // ReadAll reads all entries from WAL
@@ -88,14 +118,24 @@ func (w *WAL) GetAllEntries() ([]WALEntry, error) {
 
 // Cleanup removes entries that have been persisted to PostgreSQL
 func (w *WAL) Cleanup(persistedIDs []string) error {
+    start := time.Now()
     w.mu.Lock()
     defer w.mu.Unlock()
+
+    logger.Log.Debug("WAL: Starting cleanup",
+        zap.Int("persisted_count", len(persistedIDs)),
+    )
 
     // Read all entries
     allEntries, err := w.readAllUnsafe()
     if err != nil {
+        logger.Log.Error("WAL: Failed to read entries for cleanup",
+            zap.Error(err),
+        )
         return err
     }
+
+    beforeCount := len(allEntries)
 
     // Create map for fast lookup
     persistedMap := make(map[string]bool)
@@ -111,8 +151,14 @@ func (w *WAL) Cleanup(persistedIDs []string) error {
         }
     }
 
+    afterCount := len(remainingEntries)
+    deletedCount := beforeCount - afterCount
+
     // Close the current file before replacing it
     if err := w.file.Close(); err != nil {
+        logger.Log.Error("WAL: Failed to close file for cleanup",
+            zap.Error(err),
+        )
         return err
     }
 
@@ -120,6 +166,10 @@ func (w *WAL) Cleanup(persistedIDs []string) error {
     tempFile := w.filePath + ".tmp"
     f, err := os.Create(tempFile)
     if err != nil {
+        logger.Log.Error("WAL: Failed to create temp file",
+            zap.String("temp_file", tempFile),
+            zap.Error(err),
+        )
         return err
     }
 
@@ -133,17 +183,33 @@ func (w *WAL) Cleanup(persistedIDs []string) error {
 
     // Replace old file with new one (atomic)
     if err := os.Rename(tempFile, w.filePath); err != nil {
+        logger.Log.Error("WAL: Failed to rename temp file",
+            zap.String("temp_file", tempFile),
+            zap.String("target_file", w.filePath),
+            zap.Error(err),
+        )
         return err
     }
 
     // Reopen the file with same flags (CRITICAL!)
     newFile, err := os.OpenFile(w.filePath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
     if err != nil {
+        logger.Log.Error("WAL: Failed to reopen file after cleanup",
+            zap.String("file_path", w.filePath),
+            zap.Error(err),
+        )
         return err
     }
 
     // Update the file pointer to the new file
     w.file = newFile
+
+    logger.Log.Info("WAL: Cleanup completed",
+        zap.Int("before_count", beforeCount),
+        zap.Int("deleted_count", deletedCount),
+        zap.Int("remaining_count", afterCount),
+        zap.Duration("duration", time.Since(start)),
+    )
 
     return nil
 }
