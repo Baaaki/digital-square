@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -16,6 +17,11 @@ type Config struct {
 	Environment string
 	JWTExpiry   time.Duration
 	WALPath     string
+
+	// Rate limiting
+	RateLimitMaxRequests int
+	RateLimitWindow      time.Duration
+	RateLimitBlockTime   time.Duration
 }
 
 func Load() *Config {
@@ -36,6 +42,11 @@ func Load() *Config {
 		walPath = "data/wal_messages"
 	}
 
+	// Rate limiting defaults
+	rateLimitMax := getEnvAsInt("RATE_LIMIT_MAX_REQUESTS", 100)
+	rateLimitWindow := getEnvAsDuration("RATE_LIMIT_WINDOW", "1m")
+	rateLimitBlock := getEnvAsDuration("RATE_LIMIT_BLOCK_TIME", "5m")
+
 	cfg := &Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		RedisURL:    os.Getenv("REDIS_URL"),
@@ -44,7 +55,39 @@ func Load() *Config {
 		Environment: os.Getenv("ENVIRONMENT"),
 		JWTExpiry:   expiry,
 		WALPath:     walPath,
+
+		RateLimitMaxRequests: rateLimitMax,
+		RateLimitWindow:      rateLimitWindow,
+		RateLimitBlockTime:   rateLimitBlock,
 	}
 
 	return cfg
+}
+
+// getEnvAsInt retrieves environment variable as int with default value
+func getEnvAsInt(key string, defaultVal int) int {
+	valStr := os.Getenv(key)
+	if valStr == "" {
+		return defaultVal
+	}
+	val, err := strconv.Atoi(valStr)
+	if err != nil {
+		log.Printf("Invalid %s value, using default: %d", key, defaultVal)
+		return defaultVal
+	}
+	return val
+}
+
+// getEnvAsDuration retrieves environment variable as duration with default value
+func getEnvAsDuration(key string, defaultVal string) time.Duration {
+	valStr := os.Getenv(key)
+	if valStr == "" {
+		valStr = defaultVal
+	}
+	duration, err := time.ParseDuration(valStr)
+	if err != nil {
+		log.Printf("Invalid %s value, using default: %s", key, defaultVal)
+		duration, _ = time.ParseDuration(defaultVal)
+	}
+	return duration
 }
