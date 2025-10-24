@@ -71,3 +71,46 @@ func (r *RedisMessageBroker) GetRecentMessages(limit int) ([]models.Message, err
 
 	return messages, nil
 }
+
+// MarkMessageAsDeleted marks a message as deleted in Redis cache (soft delete)
+// This allows admins to see deleted messages from cache
+func (r *RedisMessageBroker) MarkMessageAsDeleted(messageID string, isDeletedByAdmin bool) error {
+	// 1. Get all cached messages
+	results, err := r.client.LRange(r.ctx, "global:recent", 0, -1).Result()
+	if err != nil {
+		return err
+	}
+
+	// 2. Find and update the matching message
+	for i, data := range results {
+		var msg models.Message
+		if err := json.Unmarshal([]byte(data), &msg); err != nil {
+			continue
+		}
+
+		// Found the message to delete
+		if msg.MessageID == messageID {
+			// Update message fields (soft delete)
+			msg.DeletedAt.Valid = true
+			msg.IsDeletedByAdmin = isDeletedByAdmin
+
+			// Re-serialize the updated message
+			updatedData, err := json.Marshal(msg)
+			if err != nil {
+				return err
+			}
+
+			// Update in Redis: Remove old, insert updated at same position
+			// Note: Redis LSET requires index, so we use position i
+			return r.client.LSet(r.ctx, "global:recent", int64(i), updatedData).Err()
+		}
+	}
+
+	// Message not found in cache (already expired or not cached yet)
+	return nil
+}
+
+// GetClient returns the underlying Redis client (for rate limiter and other utilities)
+func (r *RedisMessageBroker) GetClient() *redis.Client {
+	return r.client
+}
