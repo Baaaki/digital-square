@@ -9,6 +9,7 @@ type MessageBroker interface {
 	// Cache operations (Phase 1-2)
 	CacheMessage(msg models.Message) error
 	GetRecentMessages(limit int) ([]models.Message, error)
+	MarkMessageAsDeleted(messageID string, isDeletedByAdmin bool) error
 
 	Close() error
 
