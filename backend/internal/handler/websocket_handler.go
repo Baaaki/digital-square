@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -9,9 +8,11 @@ import (
 	"github.com/Baaaki/digital-square/internal/models"
 	"github.com/Baaaki/digital-square/internal/service"
 	"github.com/Baaaki/digital-square/internal/utils"
+	"github.com/Baaaki/digital-square/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"go.uber.org/zap"
 )
 
 const (
@@ -46,7 +47,8 @@ type WSResponse struct {
 	Timestamp string `json:"timestamp,omitempty"`
 	Error     string `json:"error,omitempty"`
 
-	// For delete events
+	// For delete events and initial messages
+	Deleted        bool `json:"deleted,omitempty"`
 	DeletedByAdmin bool `json:"deleted_by_admin,omitempty"`
 
 	//For ACK
@@ -103,7 +105,11 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Printf("Failed to upgrade connection: %v", err)
+		logger.Log.Error("Failed to upgrade WebSocket connection",
+			zap.String("user_id", claims.UserID.String()),
+			zap.String("username", claims.Username),
+			zap.Error(err),
+		)
 		return
 	}
 
@@ -117,9 +123,15 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 
 	h.mu.Lock()
 	h.clients[conn] = client
+	totalClients := len(h.clients)
 	h.mu.Unlock()
 
-	log.Printf("Client connected: %s (total: %d)", client.username, len(h.clients))
+	logger.Log.Info("WebSocket client connected",
+		zap.String("user_id", client.userID.String()),
+		zap.String("username", client.username),
+		zap.String("role", string(client.role)),
+		zap.Int("total_clients", totalClients),
+	)
 	
 	// ✅ SEND INITIAL 100 MESSAGES FROM REDIS/POSTGRESQL
 	go h.sendInitialMessages(client)
@@ -153,7 +165,11 @@ func (h *WebSocketHandler) handleClient(client *Client) {
 	for {
 		select {
 		case <-sessionTimer.C:
-			log.Printf("Session expired for %s (15 minutes)", client.username)
+			logger.Log.Info("WebSocket session expired",
+				zap.String("user_id", client.userID.String()),
+				zap.String("username", client.username),
+				zap.Duration("session_duration", time.Since(client.connectedAt)),
+			)
 			h.closeClientGracefully(client, "session expired after 15 minutes")
 			return
 
@@ -164,7 +180,11 @@ func (h *WebSocketHandler) handleClient(client *Client) {
 			err := client.conn.ReadJSON(&req)
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("WebSocket error: %v", err)
+					logger.Log.Warn("WebSocket unexpected close",
+						zap.String("user_id", client.userID.String()),
+						zap.String("username", client.username),
+						zap.Error(err),
+					)
 				}
 				return
 			}
@@ -184,7 +204,11 @@ func (h *WebSocketHandler) handleClient(client *Client) {
 }
 
 func (h *WebSocketHandler) handleSendMessage(client *Client, req WSRequest) {
-	log.Printf("🔵 Message received from %s (content: %.30s...)", client.username, req.Content)
+	logger.Log.Debug("Message received",
+		zap.String("user_id", client.userID.String()),
+		zap.String("username", client.username),
+		zap.Int("content_length", len(req.Content)),
+	)
 
 	if req.Content == "" {
 		h.sendAck(client, req.TempID, "", "error", "content cannot be empty")
@@ -193,12 +217,20 @@ func (h *WebSocketHandler) handleSendMessage(client *Client, req WSRequest) {
 
 	msg, err := h.messageService.SendMessage(client.userID, client.username, req.Content)
 	if err != nil {
-		log.Printf("❌ Failed to send message (WAL Error): %v", err)
+		logger.Log.Error("Failed to send message (WAL Error)",
+			zap.String("user_id", client.userID.String()),
+			zap.String("username", client.username),
+			zap.Error(err),
+		)
 		h.sendAck(client, req.TempID, "", "error", "failed to write to WAL")
 		return
 	}
 
-	log.Printf("✅ Message %s written to WAL", msg.MessageID)
+	logger.Log.Info("Message written to WAL",
+		zap.String("message_id", msg.MessageID),
+		zap.String("user_id", client.userID.String()),
+		zap.String("username", client.username),
+	)
 
 	// Direct broadcast to all connected clients (in-memory, same node)
 	h.mu.RLock()
@@ -215,7 +247,10 @@ func (h *WebSocketHandler) handleSendMessage(client *Client, req WSRequest) {
 		Timestamp: msg.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	})
 
-	log.Printf("📤 Broadcasted message to %d clients", clientCount)
+	logger.Log.Debug("Broadcasted message to all clients",
+		zap.String("message_id", msg.MessageID),
+		zap.Int("client_count", clientCount),
+	)
 
 	h.sendAck(client, req.TempID, msg.MessageID, "success", "")
 }
@@ -230,10 +265,20 @@ func (h *WebSocketHandler) handleDeleteMessage(client *Client, req WSRequest) {
 	isAdmin := client.role == models.RoleAdmin
 	err := h.messageService.DeleteMessage(req.MessageID, client.userID, isAdmin)
 	if err != nil {
-		log.Printf("Failed to delete message: %v", err)
+		logger.Log.Error("Failed to delete message",
+			zap.String("message_id", req.MessageID),
+			zap.String("user_id", client.userID.String()),
+			zap.Error(err),
+		)
 		h.sendError(client, err.Error())
 		return
 	}
+
+	logger.Log.Info("Message deleted",
+		zap.String("message_id", req.MessageID),
+		zap.String("user_id", client.userID.String()),
+		zap.Bool("is_admin", isAdmin),
+	)
 
 	// Direct broadcast delete event to all connected clients (in-memory)
 	h.broadcastDeleteEvent(req.MessageID, isAdmin)
@@ -244,7 +289,7 @@ func (h *WebSocketHandler) handleDeleteMessage(client *Client, req WSRequest) {
 		Type:      "delete_success",
 		MessageID: req.MessageID,
 	}); err != nil {
-		log.Printf("Failed to send delete success response: %v", err)
+		logger.Log.Warn("Failed to send delete success response", zap.Error(err))
 	}
 }
 
@@ -258,7 +303,7 @@ func (h *WebSocketHandler) broadcastToAll(msg WSResponse) {
 
 		err := conn.WriteJSON(msg)
 		if err != nil {
-			log.Printf("Failed to send to client: %v", err)
+			logger.Log.Debug("Failed to send message to client", zap.Error(err))
 			// Don't remove client here, handleClient will do cleanup
 		}
 	}
@@ -277,7 +322,7 @@ func (h *WebSocketHandler) broadcastDeleteEvent(messageID string, deletedByAdmin
 	for conn := range h.clients {
 		conn.SetWriteDeadline(time.Now().Add(writeWait))
 		if err := conn.WriteJSON(deleteMsg); err != nil {
-			log.Printf("Failed to broadcast delete event: %v", err)
+			logger.Log.Debug("Failed to broadcast delete event", zap.Error(err))
 		}
 	}
 }
@@ -290,7 +335,10 @@ func (h *WebSocketHandler) pingClient(client *Client, ticker *time.Ticker, done 
 
 			// Send ping message
 			if err := client.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("Ping failed for %s: %v", client.username, err)
+				logger.Log.Debug("Ping failed",
+					zap.String("username", client.username),
+					zap.Error(err),
+				)
 				return
 			}
 
@@ -307,7 +355,7 @@ func (h *WebSocketHandler) closeClientGracefully(client *Client, reason string) 
 		Type:  "session_expired",
 		Error: reason,
 	}); err != nil {
-		log.Printf("Failed to send session_expired message: %v", err)
+		logger.Log.Debug("Failed to send session_expired message", zap.Error(err))
 	}
 
 	// Send WebSocket close frame (Gorilla WebSocket protocol)
@@ -316,10 +364,13 @@ func (h *WebSocketHandler) closeClientGracefully(client *Client, reason string) 
 		websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, reason),
 	); err != nil {
-		log.Printf("Failed to send close frame: %v", err)
+		logger.Log.Debug("Failed to send close frame", zap.Error(err))
 	}
 
-	log.Printf("Closed connection for %s: %s", client.username, reason)
+	logger.Log.Info("Closed WebSocket connection gracefully",
+		zap.String("username", client.username),
+		zap.String("reason", reason),
+	)
 }
 
 func (h *WebSocketHandler) removeClient(conn *websocket.Conn) {
@@ -333,8 +384,11 @@ func (h *WebSocketHandler) removeClient(conn *websocket.Conn) {
 
 		// Calculate session duration
 		duration := time.Since(client.connectedAt)
-		log.Printf("Client disconnected: %s (session duration: %v, remaining: %d)",
-			client.username, duration.Round(time.Second), len(h.clients))
+		logger.Log.Info("WebSocket client disconnected",
+			zap.String("username", client.username),
+			zap.Duration("session_duration", duration),
+			zap.Int("remaining_clients", len(h.clients)),
+		)
 	}
 }
 
@@ -344,7 +398,7 @@ func (h *WebSocketHandler) sendError(client *Client, errorMsg string) {
 		Type:  "error",
 		Error: errorMsg,
 	}); err != nil {
-		log.Printf("Failed to send error message: %v", err)
+		logger.Log.Debug("Failed to send error message", zap.Error(err))
 	}
 }
 
@@ -363,7 +417,7 @@ func (h *WebSocketHandler) sendAck(client *Client, tempID, messageID, status, er
 	}
 
 	if err := client.conn.WriteJSON(ackResponse); err != nil {
-		log.Printf("Failed to send ACK: %v", err)
+		logger.Log.Debug("Failed to send ACK", zap.Error(err))
 	}
 }
 
@@ -372,22 +426,26 @@ func (h *WebSocketHandler) sendInitialMessages(client *Client) {
 	// Get last 100 messages from database (Redis cache or PostgreSQL)
 	messages, err := h.messageService.GetRecentMessages(100)
 	if err != nil {
-		log.Printf("Failed to load initial messages for %s: %v", client.username, err)
+		logger.Log.Error("Failed to load initial messages",
+			zap.String("username", client.username),
+			zap.Error(err),
+		)
 		return
 	}
 
 	isAdmin := client.role == models.RoleAdmin
 
-	// Send each message to client
-	for _, msg := range messages {
-		// Skip deleted messages for non-admin users
-		if msg.DeletedAt.Valid && !isAdmin {
-			continue
-		}
+	// Reverse messages so newest is sent first (frontend expects newest at top)
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
 
+		// Prepare message content and deleted flag
 		content := msg.Content
+		deleted := msg.DeletedAt.Valid
+		deletedByAdmin := msg.IsDeletedByAdmin
+
 		// Mask deleted message content for non-admin users
-		if msg.DeletedAt.Valid && !isAdmin {
+		if deleted && !isAdmin {
 			if msg.IsDeletedByAdmin {
 				content = "This message was deleted by admin"
 			} else {
@@ -396,21 +454,29 @@ func (h *WebSocketHandler) sendInitialMessages(client *Client) {
 		}
 
 		wsMsg := WSResponse{
-			Type:      "message",
-			ID:        msg.ID,        // PostgreSQL ID (for pagination)
-			MessageID: msg.MessageID, // UUID (global unique identifier)
-			UserID:    msg.UserID.String(),
-			Username:  msg.User.Username,
-			Content:   content,
-			Timestamp: msg.CreatedAt.Format(time.RFC3339),
+			Type:           "message",
+			ID:             msg.ID,        // PostgreSQL ID (for pagination)
+			MessageID:      msg.MessageID, // UUID (global unique identifier)
+			UserID:         msg.UserID.String(),
+			Username:       msg.Username, // ✅ Use denormalized username field
+			Content:        content,
+			Timestamp:      msg.CreatedAt.Format(time.RFC3339),
+			Deleted:        deleted,        // ✅ Send deleted flag
+			DeletedByAdmin: deletedByAdmin, // ✅ Send deleted_by_admin flag
 		}
 
 		client.conn.SetWriteDeadline(time.Now().Add(writeWait))
 		if err := client.conn.WriteJSON(wsMsg); err != nil {
-			log.Printf("Failed to send initial message to %s: %v", client.username, err)
+			logger.Log.Warn("Failed to send initial message",
+				zap.String("username", client.username),
+				zap.Error(err),
+			)
 			return
 		}
 	}
 
-	log.Printf("Sent %d initial messages to %s", len(messages), client.username)
+	logger.Log.Info("Sent initial messages to new client",
+		zap.String("username", client.username),
+		zap.Int("message_count", len(messages)),
+	)
 }
