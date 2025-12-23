@@ -25,10 +25,11 @@ type Config struct {
 }
 
 func Load() *Config {
+	// Try to load .env file, but don't fail if it doesn't exist
+	// (Docker containers use environment variables directly)
 	err := godotenv.Load()
-
 	if err != nil {
-		log.Fatal("Error loading .env file")
+		log.Println("Error loading .env file")
 	}
 
 	expiryStr := os.Getenv("JWT_EXPIRY")

@@ -51,65 +51,80 @@ Client (WebSocket) → Go Server (JWT Auth)
 - **Batch inserts** to PostgreSQL for write optimization
 - **Redis caching** for fast message retrieval on new connections
 
-## Project Structure
-
-```
-backend/
-├── cmd/server/          # Application entry point
-├── internal/
-│   ├── handlers/        # HTTP + WebSocket handlers
-│   ├── services/        # Business logic layer
-│   ├── repository/      # Data access layer
-│   ├── models/          # Database models (GORM)
-│   ├── middleware/      # Auth, rate limiting, CORS
-│   └── wal/            # Write-Ahead Log implementation
-└── pkg/cache/          # Redis cache interface
-
-frontend/
-└── src/
-    ├── app/            # Next.js App Router pages
-    ├── components/     # React components
-    ├── hooks/          # Custom hooks (useAuth, useWebSocket)
-    └── lib/            # Utilities
-```
 
 ## Quick Start
 
-**Prerequisites:** Go 1.21+, Node.js 18+, PostgreSQL, Redis
+**Prerequisites:** Docker and Docker Compose
 
-### Backend
+### Using Docker (Recommended)
 
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/digital-square.git
+cd digital-square
+
+# Start all services (PostgreSQL, Redis, Backend, Frontend)
+make up
+
+# Create admin user
+make seed
+
+# View logs
+make logs
+
+# Stop all services
+make down
+```
+
+**Access the application:**
+- Frontend: http://localhost:3001
+- Backend API: http://localhost:9090
+
+**Default admin credentials:**
+- Email: `admin@digitalsquare.com`
+- Password: `Admin123SecurePassword`
+
+### Available Make Commands
+
+```bash
+make help          # Show all available commands
+make up            # Start all services
+make down          # Stop all services
+make ps            # Show container status
+make logs          # View all logs (live)
+make logs-backend  # View backend logs only
+make logs-frontend # View frontend logs only
+make rebuild       # Rebuild and restart all services
+make seed          # Create admin user
+make clean         # Stop and remove all data (WARNING: deletes database)
+```
+
+### Local Development (Without Docker)
+
+If you prefer to run services locally:
+
+**Backend:**
 ```bash
 cd backend
-
-# Create .env file
-DATABASE_URL=postgresql://user:pass@host/db
-REDIS_URL=redis://host:port
-JWT_SECRET=your-secret-key
-
-# Run with hot reload
-air
+# Requires: Go 1.21+, PostgreSQL, Redis
+air  # Hot reload
 ```
 
-### Frontend
-
+**Frontend:**
 ```bash
 cd frontend
-
-# Create .env.local
-NEXT_PUBLIC_API_URL=http://localhost:8080
-NEXT_PUBLIC_WS_URL=ws://localhost:8080
-
-# Install and run
-bun install && bun dev
+# Requires: Node.js 18+ or Bun
+bun run dev
 ```
 
-### Create Admin User
+### Port Configuration
 
-```bash
-cd backend && go run cmd/seed/main.go
-# Credentials: admin@example.com / admin123
-```
+| Service | Host Port | Container Port |
+|---------|-----------|----------------|
+| Frontend | 3001 | 3000 |
+| Backend | 9090 | 8080 |
+| PostgreSQL | 15432 | 5432 |
+| Redis | 16379 | 6379 |
 
 ## Features & Implementation
 
@@ -192,7 +207,7 @@ As a learning project, some production concerns are not fully addressed:
 **Architecture & Scalability:**
 - Single-node design (horizontal scaling would require Redis Pub/Sub)
 - No graceful shutdown implementation
-- Manual deployment (Docker/Kubernetes not included)
+- Production deployment guide not included
 
 **Testing:**
 - Integration and E2E tests not yet implemented
@@ -218,16 +233,3 @@ Building this project provided hands-on experience with:
 - **Security fundamentals:** Authentication, authorization, input validation
 - **Performance optimization:** Batch writes, caching strategies, denormalization
 - **Testing practices:** Unit tests, benchmarks, test fixtures
-
-## Future Improvements
-
-Potential enhancements for learning:
-
-- [ ] Add comprehensive integration and E2E test suites
-- [ ] Implement Docker Compose for easier local setup
-- [ ] Add Prometheus metrics and Grafana dashboards
-- [ ] Create proper graceful shutdown handling
-- [ ] Implement WebSocket origin validation
-- [ ] Add frontend message virtualization (TanStack Virtual)
-- [ ] Set up CI/CD pipeline with GitHub Actions
-- [ ] Prepare for horizontal scaling (Redis Pub/Sub)
